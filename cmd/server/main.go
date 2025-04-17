@@ -1,9 +1,8 @@
-// admin-service-qubool-kallyaanam/cmd/main.go
+// admin-service-qubool-kallyaanam/cmd/server/main.go
 package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,66 +12,124 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	_ "github.com/lib/pq"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
-func main() {
-	// Database connection
+// Admin model for GORM
+type Admin struct {
+	gorm.Model
+	Username string `gorm:"uniqueIndex;not null"`
+	Email    string `gorm:"uniqueIndex;not null"`
+	Password string `gorm:"not null"`
+	Role     string `gorm:"not null;default:'admin'"`
+	IsActive bool   `gorm:"default:true"`
+}
+
+func createDBIfNotExists() error {
+	// Connect to default postgres database first
 	dbHost := os.Getenv("DB_HOST")
 	if dbHost == "" {
-		dbHost = "postgres" // Default in Docker
+		dbHost = "postgres"
 	}
-
 	dbPort := os.Getenv("DB_PORT")
 	if dbPort == "" {
-		dbPort = "5432" // Default PostgreSQL port
+		dbPort = "5432"
 	}
-
 	dbUser := os.Getenv("DB_USER")
 	if dbUser == "" {
-		dbUser = "postgres" // Default user
+		dbUser = "postgres"
 	}
-
 	dbPassword := os.Getenv("DB_PASSWORD")
 	if dbPassword == "" {
-		dbPassword = "postgres" // Default password
+		dbPassword = "postgres"
+	}
+
+	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=postgres sslmode=disable",
+		dbHost, dbPort, dbUser, dbPassword)
+
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		return err
 	}
 
 	dbName := os.Getenv("DB_NAME")
 	if dbName == "" {
-		dbName = "admin_db" // Default database name
+		dbName = "admin_db"
 	}
 
-	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+	// Check if database exists
+	var count int64
+	db.Raw("SELECT COUNT(*) FROM pg_database WHERE datname = ?", dbName).Scan(&count)
+
+	// Create database if it doesn't exist
+	if count == 0 {
+		log.Printf("Creating database: %s", dbName)
+		createSQL := fmt.Sprintf("CREATE DATABASE %s", dbName)
+		if err := db.Exec(createSQL).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func main() {
+	// Create database if it doesn't exist
+	if err := createDBIfNotExists(); err != nil {
+		log.Printf("Error creating database: %v", err)
+	}
+
+	// Database connection with GORM
+	dbHost := os.Getenv("DB_HOST")
+	if dbHost == "" {
+		dbHost = "postgres"
+	}
+	dbPort := os.Getenv("DB_PORT")
+	if dbPort == "" {
+		dbPort = "5432"
+	}
+	dbUser := os.Getenv("DB_USER")
+	if dbUser == "" {
+		dbUser = "postgres"
+	}
+	dbPassword := os.Getenv("DB_PASSWORD")
+	if dbPassword == "" {
+		dbPassword = "postgres"
+	}
+	dbName := os.Getenv("DB_NAME")
+	if dbName == "" {
+		dbName = "admin_db"
+	}
+
+	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
 		dbHost, dbPort, dbUser, dbPassword, dbName)
 
-	// Try to connect to database
-	db, err := sql.Open("postgres", connStr)
+	// Connect using GORM
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
-		log.Printf("Error opening database connection: %v", err)
+		log.Printf("Error connecting to database: %v", err)
 	} else {
-		// Test connection
-		err = db.Ping()
-		if err != nil {
-			log.Printf("Error connecting to database: %v", err)
+		log.Println("Successfully connected to database")
+
+		// Auto migrate schemas
+		if err := db.AutoMigrate(&Admin{}); err != nil {
+			log.Printf("Error migrating database: %v", err)
 		} else {
-			log.Println("Successfully connected to database")
+			log.Println("Database migration successful")
 		}
-		defer db.Close()
 	}
 
 	router := gin.Default()
 
 	// Health Check endpoint
 	router.GET("/health", func(c *gin.Context) {
-		// Check database health
+		// Check database health with GORM
 		dbStatus := "UP"
-		if db != nil {
-			err := db.Ping()
-			if err != nil {
-				dbStatus = "DOWN"
-			}
-		} else {
+		sqlDB, err := db.DB()
+		if err != nil {
+			dbStatus = "DOWN"
+		} else if err := sqlDB.Ping(); err != nil {
 			dbStatus = "DOWN"
 		}
 
